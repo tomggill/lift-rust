@@ -22,3 +22,10 @@ axum-extra = { version = "0.10.0", features = ["typed-header"] }
 anyhow = "1.0.95"
 async-session = "3.0.0"
 dotenv = "0.15.0"
+sqlx = { version = "0.8.3", features = [
+    "runtime-tokio",
+    "mysql",
+    "runtime-async-std-native-tls",
+    "chrono",
+    "uuid",
+] }

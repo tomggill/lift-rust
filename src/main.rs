@@ -20,6 +20,7 @@ use oauth2::{
 };
 use route::create_router;
 use serde::{Deserialize, Serialize};
+use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use std::{convert::Infallible, env};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -41,9 +42,11 @@ async fn main() {
     // `MemoryStore` is just used as an example. Don't use this in production.
     let store = MemoryStore::new();
     let oauth_client = oauth_client().unwrap();
+    let db = get_sql_pool().await.unwrap();
     let app_state = AppState {
         store,
         oauth_client,
+        db,
     };
 
     let cors = CorsLayer::new()
@@ -73,6 +76,7 @@ async fn main() {
 struct AppState {
     store: MemoryStore,
     oauth_client: BasicClient,
+    db: MySqlPool,
 }
 
 impl FromRef<AppState> for MemoryStore {
@@ -85,6 +89,17 @@ impl FromRef<AppState> for BasicClient {
     fn from_ref(state: &AppState) -> Self {
         state.oauth_client.clone()
     }
+}
+
+async fn get_sql_pool() -> Result<MySqlPool, AppError> {
+    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
+    let pool = MySqlPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .context("Failed to connect to the database")?;
+    tracing::info!("Connection to the database is successful!");
+    Ok(pool)
 }
 
 fn oauth_client() -> Result<BasicClient, AppError> {
