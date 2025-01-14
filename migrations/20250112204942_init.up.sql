@@ -1,0 +1,11 @@
+-- Add up migration script here
+DROP TABLE IF EXISTS `users`;
+
+CREATE TABLE `users` (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    first_name VARCHAR(64) NOT NULL,
+    last_name VARCHAR(64),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)
