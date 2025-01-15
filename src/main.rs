@@ -1,31 +1,31 @@
+mod client;
+mod config;
 mod errors;
+mod handler;
+mod middleware;
 mod route;
 
-use anyhow::{anyhow, Context, Result};
-use async_session::{MemoryStore, Session, SessionStore};
+use anyhow::{Context, Result};
+use async_session::{MemoryStore, SessionStore};
 use axum::{
-    extract::{FromRef, FromRequestParts, OptionalFromRequestParts, Query, State},
-    http::{header::SET_COOKIE, HeaderMap},
+    extract::{FromRef, FromRequestParts, OptionalFromRequestParts, State},
     response::{IntoResponse, Redirect, Response},
     RequestPartsExt,
 };
 use axum_extra::{headers, typed_header::TypedHeaderRejectionReason, TypedHeader};
-use chrono::{DateTime, Duration, Utc};
 use dotenv::dotenv;
 use errors::AppError;
 use http::{header, request::Parts, Method};
-use oauth2::{
-    basic::BasicClient, reqwest::async_http_client, AccessToken, AuthUrl, AuthorizationCode,
-    ClientId, ClientSecret, CsrfToken, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
-};
+use oauth2::{basic::BasicClient, AuthUrl, ClientId, ClientSecret, RedirectUrl, TokenUrl};
+use reqwest::Client;
 use route::create_router;
 use serde::{Deserialize, Serialize};
+use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use std::{convert::Infallible, env};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 static COOKIE_NAME: &str = "SESSION";
-static CSRF_TOKEN: &str = "csrf_token";
 
 #[tokio::main]
 async fn main() {
@@ -41,9 +41,13 @@ async fn main() {
     // `MemoryStore` is just used as an example. Don't use this in production.
     let store = MemoryStore::new();
     let oauth_client = oauth_client().unwrap();
+    let db = get_sql_pool().await.unwrap();
+    let http_client = Client::new();
     let app_state = AppState {
         store,
         oauth_client,
+        db,
+        http_client,
     };
 
     let cors = CorsLayer::new()
@@ -73,6 +77,8 @@ async fn main() {
 struct AppState {
     store: MemoryStore,
     oauth_client: BasicClient,
+    http_client: Client,
+    db: MySqlPool,
 }
 
 impl FromRef<AppState> for MemoryStore {
@@ -85,6 +91,17 @@ impl FromRef<AppState> for BasicClient {
     fn from_ref(state: &AppState) -> Self {
         state.oauth_client.clone()
     }
+}
+
+async fn get_sql_pool() -> Result<MySqlPool, AppError> {
+    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
+    let pool = MySqlPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .context("Failed to connect to the database")?;
+    tracing::info!("Connection to the database is successful!");
+    Ok(pool)
 }
 
 fn oauth_client() -> Result<BasicClient, AppError> {
@@ -110,8 +127,6 @@ fn oauth_client() -> Result<BasicClient, AppError> {
     ))
 }
 
-// The user data we'll get back from Discord.
-// https://discord.com/developers/docs/resources/user#user-object-user-structure
 #[derive(Debug, Serialize, Deserialize)]
 struct User {
     sub: String,
@@ -129,52 +144,6 @@ async fn index(user: Option<User>) -> impl IntoResponse {
         ),
         None => "You're not logged in.\nVisit `/auth/discord` to do so.".to_string(),
     }
-}
-
-async fn google_auth(
-    State(client): State<BasicClient>,
-    State(store): State<MemoryStore>,
-) -> Result<impl IntoResponse, AppError> {
-    let (auth_url, csrf_token) = client
-        .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new(
-            std::env::var("GOOGLE_EMAIL_SCOPE").context("Missing GOOGLE_EMAIL_SCOPE!")?,
-        ))
-        .add_scope(Scope::new(
-            std::env::var("GOOGLE_PROFILE_SCOPE").context("Missing GOOGLE_PROFILE_SCOPE!")?,
-        ))
-        .add_extra_param("access_type", "offline")
-        .add_extra_param("prompt", "consent")
-        .url();
-
-    // Create session to store csrf_token
-    let mut session = Session::new();
-    session
-        .insert(CSRF_TOKEN, &csrf_token)
-        .context("failed in inserting CSRF token into session")?;
-
-    // Store the session in MemoryStore and retrieve the session cookie
-    let cookie = store
-        .store_session(session)
-        .await
-        .context("failed to store CSRF token session")?
-        .context("unexpected error retrieving CSRF cookie value")?;
-
-    let expiry_duration = Duration::hours(1); // Default to 1 hour from now
-    let expiry_time: DateTime<Utc> = Utc::now() + expiry_duration;
-    let expires = expiry_time.to_rfc2822();
-
-    // Attach the session cookie to the response header
-    let cookie = format!(
-        "{COOKIE_NAME}={cookie}; SameSite=None; HttpOnly; Secure; Path=/; Expires={expires}"
-    );
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        SET_COOKIE,
-        cookie.parse().context("failed to parse cookie")?,
-    );
-
-    Ok((headers, Redirect::to(auth_url.as_ref())))
 }
 
 // Valid user session required. If there is none, redirect to the auth page
@@ -213,118 +182,6 @@ async fn logout(
 struct AuthRequest {
     code: String,
     state: String,
-}
-
-async fn csrf_token_validation_workflow(
-    auth_request: &AuthRequest,
-    cookies: &headers::Cookie,
-    store: &MemoryStore,
-) -> Result<(), AppError> {
-    // Extract the cookie from the request
-    let cookie = cookies
-        .get(COOKIE_NAME)
-        .context("unexpected error getting cookie name")?
-        .to_string();
-
-    // Load the session
-    let session = match store
-        .load_session(cookie)
-        .await
-        .context("failed to load session")?
-    {
-        Some(session) => session,
-        None => return Err(anyhow!("Session not found").into()),
-    };
-
-    // Extract the CSRF token from the session
-    let stored_csrf_token = session
-        .get::<CsrfToken>(CSRF_TOKEN)
-        .context("CSRF token not found in session")?
-        .to_owned();
-
-    // Cleanup the CSRF token session
-    store
-        .destroy_session(session)
-        .await
-        .context("Failed to destroy old session")?;
-
-    // Validate CSRF token is the same as the one in the auth request
-    if *stored_csrf_token.secret() != auth_request.state {
-        return Err(anyhow!("CSRF token mismatch").into());
-    }
-
-    Ok(())
-}
-
-async fn login_authorized(
-    Query(query): Query<AuthRequest>,
-    State(store): State<MemoryStore>,
-    State(oauth_client): State<BasicClient>,
-    TypedHeader(cookies): TypedHeader<headers::Cookie>,
-) -> Result<impl IntoResponse, AppError> {
-    csrf_token_validation_workflow(&query, &cookies, &store).await?;
-
-    // Get an auth token
-    let token = oauth_client
-        .exchange_code(AuthorizationCode::new(query.code.clone()))
-        .request_async(async_http_client)
-        .await
-        .context("failed in sending request request to authorization server")?;
-
-    let access_token = token.access_token().secret().to_string();
-    let refresh_token = token.refresh_token().map(|rt| rt.secret().to_string());
-
-    println!("AT: {:?}", access_token);
-    println!("RT: {:?}", refresh_token);
-    // Fetch user data from google
-    let client = reqwest::Client::new();
-    let user_data: User = client
-        .get("https://openidconnect.googleapis.com/v1/userinfo")
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .context("failed in sending request to target Url")?
-        .json::<User>()
-        .await
-        .context("failed to deserialize response as JSON")?;
-
-    // Create a new session filled with user data
-    let mut session = Session::new();
-    session
-        .insert("user", &user_data)
-        .context("failed in inserting serialized value into session")?;
-
-    // Store session and get corresponding cookie
-    let cookie = store
-        .store_session(session)
-        .await
-        .context("failed to store session")?
-        .context("unexpected error retrieving cookie value")?;
-
-    // Build the cookie
-    let cookie = format!("{COOKIE_NAME}={cookie}; SameSite=Lax; HttpOnly; Secure; Path=/");
-
-    // Set cookie
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        SET_COOKIE,
-        cookie.parse().context("failed to parse cookie")?,
-    );
-
-    Ok((headers, Redirect::to("/")))
-}
-
-async fn refresh_access_token(
-    refresh_token: &str,
-    client: &BasicClient,
-) -> Result<AccessToken, AppError> {
-    let token_response = client
-        .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
-        .request_async(async_http_client)
-        .await
-        .context("failed to refresh access token")?;
-
-    Ok(token_response.access_token().to_owned())
 }
 
 struct AuthRedirect;
