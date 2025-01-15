@@ -1,6 +1,8 @@
+mod client;
 mod config;
 mod errors;
 mod handler;
+mod middleware;
 mod route;
 
 use anyhow::{Context, Result};
@@ -14,10 +16,8 @@ use axum_extra::{headers, typed_header::TypedHeaderRejectionReason, TypedHeader}
 use dotenv::dotenv;
 use errors::AppError;
 use http::{header, request::Parts, Method};
-use oauth2::{
-    basic::BasicClient, reqwest::async_http_client, AccessToken, AuthUrl, ClientId, ClientSecret,
-    RedirectUrl, RefreshToken, TokenResponse, TokenUrl,
-};
+use oauth2::{basic::BasicClient, AuthUrl, ClientId, ClientSecret, RedirectUrl, TokenUrl};
+use reqwest::Client;
 use route::create_router;
 use serde::{Deserialize, Serialize};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
@@ -42,10 +42,12 @@ async fn main() {
     let store = MemoryStore::new();
     let oauth_client = oauth_client().unwrap();
     let db = get_sql_pool().await.unwrap();
+    let http_client = Client::new();
     let app_state = AppState {
         store,
         oauth_client,
         db,
+        http_client,
     };
 
     let cors = CorsLayer::new()
@@ -75,6 +77,7 @@ async fn main() {
 struct AppState {
     store: MemoryStore,
     oauth_client: BasicClient,
+    http_client: Client,
     db: MySqlPool,
 }
 
@@ -179,19 +182,6 @@ async fn logout(
 struct AuthRequest {
     code: String,
     state: String,
-}
-
-async fn refresh_access_token(
-    refresh_token: &str,
-    client: &BasicClient,
-) -> Result<AccessToken, AppError> {
-    let token_response = client
-        .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
-        .request_async(async_http_client)
-        .await
-        .context("failed to refresh access token")?;
-
-    Ok(token_response.access_token().to_owned())
 }
 
 struct AuthRedirect;

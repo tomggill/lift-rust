@@ -50,11 +50,9 @@ pub async fn google_auth(
     .execute(&app_state.db)
     .await?;
 
-    // Attach the session cookie to the response header
-    let cookies = [
-        // format!("{COOKIE_NAME}={cookie}; SameSite=None; HttpOnly; Secure; Path=/"),
-        format!("{SESSION_COOKIE_NAME}={session_id}; SameSite=Lax; HttpOnly; Secure; Path=/"),
-    ];
+    let cookies = [format!(
+        "{SESSION_COOKIE_NAME}={session_id}; SameSite=Lax; HttpOnly; Secure; Path=/"
+    )];
     let mut headers = HeaderMap::new();
     for cookie in cookies {
         headers.append(
