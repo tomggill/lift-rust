@@ -18,7 +18,7 @@ reqwest = { version = "0.12.12", default-features = false, features = [
     "json",
 ] }
 http = "1.2.0"
-axum-extra = { version = "0.10.0", features = ["typed-header"] }
+axum-extra = { version = "0.10.0", features = ["typed-header", "cookie"] }
 anyhow = "1.0.95"
 async-session = "3.0.0"
 dotenv = "0.15.0"
@@ -29,3 +29,5 @@ sqlx = { version = "0.8.3", features = [
     "chrono",
     "uuid",
 ] }
+async-trait = "0.1.85"
+rand = "0.8.5"
