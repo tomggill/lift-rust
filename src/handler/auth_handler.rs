@@ -189,3 +189,4 @@ async fn expire_session(app_state: &AppState, session_id: &String) -> Result<(),
 
     Ok(())
 }
+
