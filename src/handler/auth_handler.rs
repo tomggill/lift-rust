@@ -66,7 +66,6 @@ pub async fn google_auth(
 
 pub async fn auth_callback(
     Query(query): Query<AuthRequest>,
-    State(store): State<MemoryStore>,
     State(oauth_client): State<BasicClient>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
     State(app_state): State<AppState>,
@@ -106,21 +105,7 @@ pub async fn auth_callback(
         *user_context_lock = Some(user_context.clone());
     }
 
-    // Create a new session filled with user data
-    let mut session = Session::new();
-    session
-        .insert("user", &user_data)
-        .context("failed in inserting serialized value into session")?;
-
-    // Store session and get corresponding cookie
-    let cookie = store
-        .store_session(session)
-        .await
-        .context("failed to store session")?
-        .context("unexpected error retrieving cookie value")?;
-
     let cookies = [
-        format!("{SESSION_COOKIE_NAME}={cookie}; SameSite=Lax; HttpOnly; Secure; Path=/"),
         format!("access_token={access_token}; SameSite=Lax; HttpOnly; Secure; Path=/"),
         format!("refresh_token={refresh_token}; SameSite=Lax; HttpOnly; Secure; Path=/"),
     ];

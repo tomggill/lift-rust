@@ -8,21 +8,20 @@ mod route;
 use anyhow::{Context, Result};
 use async_session::{MemoryStore, SessionStore};
 use axum::{
-    extract::{FromRef, FromRequestParts, OptionalFromRequestParts, State},
+    extract::{FromRef, State},
     response::{IntoResponse, Redirect, Response},
-    RequestPartsExt,
 };
-use axum_extra::{headers, typed_header::TypedHeaderRejectionReason, TypedHeader};
+use axum_extra::{extract::cookie::Cookie, headers, TypedHeader};
 use dotenv::dotenv;
 use errors::AppError;
-use http::{header, request::Parts, Method};
-use oauth2::{basic::BasicClient, AuthUrl, ClientId, ClientSecret, RedirectUrl, TokenUrl};
+use http::{header::SET_COOKIE, HeaderMap, Method};
+use oauth2::{basic::BasicClient, reqwest::async_http_client, AccessToken, AuthUrl, ClientId, ClientSecret, RedirectUrl, RevocableToken, RevocationUrl, StandardRevocableToken, TokenUrl};
 use reqwest::Client;
 use route::create_router;
 use serde::{Deserialize, Serialize};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use tokio::sync::RwLock;
-use std::{convert::Infallible, env, sync::Arc};
+use std::{env, sync::Arc};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -38,18 +37,11 @@ struct UserContext {
 
 #[derive(Clone)]
 struct AppState {
-    store: MemoryStore,
     oauth_client: BasicClient,
     http_client: Client,
     db: MySqlPool,
     user_context: Arc<RwLock<Option<UserContext>>>,
 
-}
-
-impl FromRef<AppState> for MemoryStore {
-    fn from_ref(state: &AppState) -> Self {
-        state.store.clone()
-    }
 }
 
 impl FromRef<AppState> for BasicClient {
@@ -70,12 +62,10 @@ async fn main() {
         .init();
 
     // `MemoryStore` is just used as an example. Don't use this in production.
-    let store = MemoryStore::new();
     let oauth_client = oauth_client().unwrap();
     let db = get_sql_pool().await.unwrap();
     let http_client = Client::new();
     let app_state = AppState {
-        store,
         oauth_client,
         db,
         http_client,
@@ -128,6 +118,10 @@ fn oauth_client() -> Result<BasicClient, AppError> {
     let token_url = std::env::var("GOOGLE_TOKEN_URL")
         .unwrap_or_else(|_| "https://oauth2.googleapis.com/token".to_string());
 
+    let revocation_url = std::env::var("GOOGLE_REVOCATION_URL")
+        .unwrap_or_else(|_| "https://oauth2.googleapis.com/revoke".to_string());
+
+
     Ok(BasicClient::new(
         ClientId::new(client_id),
         Some(ClientSecret::new(client_secret)),
@@ -136,7 +130,11 @@ fn oauth_client() -> Result<BasicClient, AppError> {
     )
     .set_redirect_uri(
         RedirectUrl::new(redirect_url).context("failed to create new redirection URL")?,
-    ))
+    )
+    .set_revocation_uri(
+        RevocationUrl::new(revocation_url).context("failed to create new revocation URL")?,
+    )
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,45 +146,70 @@ struct User {
 }
 
 // Session is optional
-async fn index(user: Option<User>) -> impl IntoResponse {
-    match user {
-        Some(u) => format!(
+async fn index(State(app_state): State<AppState>) -> impl IntoResponse {
+    match app_state.user_context.read().await.as_ref() {
+        Some(user) => format!(
             "Hey {}! You're logged in!\nYou may now access `/protected`.\nLog out with `/logout`.",
-            u.given_name
+            user.name
         ),
         None => "You're not logged in.\nVisit `/auth/discord` to do so.".to_string(),
     }
 }
 
 // Valid user session required. If there is none, redirect to the auth page
-async fn protected(user: User) -> impl IntoResponse {
-    format!("Welcome to the protected area :)\nHere's your info:\n{user:?}")
+async fn protected(State(app_state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+    match app_state.user_context.read().await.as_ref() {
+        Some(user) => Ok(format!("Welcome to the protected area, {}!", user.name)),
+        None => Err(anyhow::anyhow!("You're not logged in.").into()),
+    }
 }
 
 async fn logout(
-    State(store): State<MemoryStore>,
+    State(oauth_client): State<BasicClient>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
 ) -> Result<impl IntoResponse, AppError> {
-    let cookie = cookies
-        .get(COOKIE_NAME)
-        .context("unexpected error getting cookie name")?;
+    // TODO: Revocation of access and refresh token not necessary as revoking a refresh 
+    // token in Google OAUTH 2.0 also revokes the associated access token and vice versa.
+    // See: https://cloud.google.com/apigee/docs/api-platform/security/oauth/validating-and-invalidating-access-tokens
+    if let Some(refresh_token) = cookies.get("refresh_token") {
+        revoke_token(refresh_token.to_string(), &oauth_client).await?;
+    }
 
-    let session = match store
-        .load_session(cookie.to_string())
-        .await
-        .context("failed to load session")?
-    {
-        Some(s) => s,
-        // No session active, just redirect
-        None => return Ok(Redirect::to("/")),
-    };
+    // TODO - refactor
+    let empty_access_token = Cookie::build(("access_token", ""))
+        .path("/")
+        .http_only(true)
+        .build();
+    let empty_refresh_token = Cookie::build(("refresh_token", ""))
+        .path("/")
+        .http_only(true)
+        .build();
 
-    store
-        .destroy_session(session)
-        .await
-        .context("failed to destroy session")?;
+    let mut headers = HeaderMap::new();
+    headers.append(
+        SET_COOKIE,
+        empty_access_token.to_string().parse().unwrap(),
+    );
+    headers.append(
+        SET_COOKIE,
+        empty_refresh_token.to_string().parse().unwrap(),
+    );
 
-    Ok(Redirect::to("/"))
+
+    // Redirect to the home page
+    Ok((headers, Redirect::to("/")))
+}
+
+async fn revoke_token(token: String, oauth_client: &BasicClient) -> Result<(), AppError> {
+    let token = AccessToken::new(token);
+    let revocable_token: StandardRevocableToken = token.into();
+
+    let response = oauth_client.revoke_token(revocable_token)?.request_async(async_http_client).await;
+
+    if let Err(error) = response {
+        return Err(AppError::from(error));
+    } 
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,58 +224,5 @@ struct AuthRedirect;
 impl IntoResponse for AuthRedirect {
     fn into_response(self) -> Response {
         Redirect::temporary("/auth/google").into_response()
-    }
-}
-
-impl<S> FromRequestParts<S> for User
-where
-    MemoryStore: FromRef<S>,
-    S: Send + Sync,
-{
-    // If anything goes wrong or no session is found, redirect to the auth page
-    type Rejection = AuthRedirect;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let store = MemoryStore::from_ref(state);
-
-        let cookies = parts
-            .extract::<TypedHeader<headers::Cookie>>()
-            .await
-            .map_err(|e| match *e.name() {
-                header::COOKIE => match e.reason() {
-                    TypedHeaderRejectionReason::Missing => AuthRedirect,
-                    _ => panic!("unexpected error getting Cookie header(s): {e}"),
-                },
-                _ => panic!("unexpected error getting cookies: {e}"),
-            })?;
-        let session_cookie = cookies.get(COOKIE_NAME).ok_or(AuthRedirect)?;
-
-        let session = store
-            .load_session(session_cookie.to_string())
-            .await
-            .unwrap()
-            .ok_or(AuthRedirect)?;
-
-        let user = session.get::<User>("user").ok_or(AuthRedirect)?;
-
-        Ok(user)
-    }
-}
-
-impl<S> OptionalFromRequestParts<S> for User
-where
-    MemoryStore: FromRef<S>,
-    S: Send + Sync,
-{
-    type Rejection = Infallible;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &S,
-    ) -> Result<Option<Self>, Self::Rejection> {
-        match <User as FromRequestParts<S>>::from_request_parts(parts, state).await {
-            Ok(res) => Ok(Some(res)),
-            Err(AuthRedirect) => Ok(None),
-        }
     }
 }
