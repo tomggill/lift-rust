@@ -20,7 +20,7 @@ pub fn protected_routes(app_state: AppState) -> Router<AppState> {
         .route("/logout", get(logout))
         .layer(middleware::from_fn_with_state(
             app_state,
-            auth_middleware::auth_2,
+            auth_middleware::auth,
         ))
 }
 

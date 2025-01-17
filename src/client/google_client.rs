@@ -1,18 +1,16 @@
 use anyhow::Context;
-use http::StatusCode;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{errors::AppError, User};
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct GoogleTokenInfo {
-    audience: String,  // The audience for which the token was issued
-    email: String,     // The email associated with the access token
-    expires_in: i64,   // Expiration time in seconds
-    issued_to: String, // The client_id the token was issued to
-    user_id: String,   // The user's unique ID
+    pub audience: String,  // The audience for which the token was issued
+    pub email: String,     // The email associated with the access token
+    pub expires_in: i64,   // Expiration time in seconds
+    pub issued_to: String, // The client_id the token was issued to
+    pub user_id: String,   // The user's unique ID
 }
 
 pub struct GoogleClient<'a> {

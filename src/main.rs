@@ -21,11 +21,42 @@ use reqwest::Client;
 use route::create_router;
 use serde::{Deserialize, Serialize};
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
-use std::{convert::Infallible, env};
+use tokio::sync::RwLock;
+use std::{convert::Infallible, env, sync::Arc};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 static COOKIE_NAME: &str = "SESSION";
+
+#[derive(Clone)]
+struct UserContext {
+    user_id: u64,
+    email: String,
+    name: String,
+}
+
+
+#[derive(Clone)]
+struct AppState {
+    store: MemoryStore,
+    oauth_client: BasicClient,
+    http_client: Client,
+    db: MySqlPool,
+    user_context: Arc<RwLock<Option<UserContext>>>,
+
+}
+
+impl FromRef<AppState> for MemoryStore {
+    fn from_ref(state: &AppState) -> Self {
+        state.store.clone()
+    }
+}
+
+impl FromRef<AppState> for BasicClient {
+    fn from_ref(state: &AppState) -> Self {
+        state.oauth_client.clone()
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -48,6 +79,7 @@ async fn main() {
         oauth_client,
         db,
         http_client,
+        user_context: Arc::new(RwLock::new(None)),
     };
 
     let cors = CorsLayer::new()
@@ -71,26 +103,6 @@ async fn main() {
     );
 
     axum::serve(listener, app).await.unwrap();
-}
-
-#[derive(Clone)]
-struct AppState {
-    store: MemoryStore,
-    oauth_client: BasicClient,
-    http_client: Client,
-    db: MySqlPool,
-}
-
-impl FromRef<AppState> for MemoryStore {
-    fn from_ref(state: &AppState) -> Self {
-        state.store.clone()
-    }
-}
-
-impl FromRef<AppState> for BasicClient {
-    fn from_ref(state: &AppState) -> Self {
-        state.oauth_client.clone()
-    }
 }
 
 async fn get_sql_pool() -> Result<MySqlPool, AppError> {

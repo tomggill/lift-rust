@@ -6,14 +6,14 @@ use axum::{
     response::{IntoResponse, Redirect},
 };
 use axum_extra::{headers, TypedHeader};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use oauth2::{
     basic::BasicClient, reqwest::async_http_client, AuthorizationCode, CsrfToken, Scope,
     TokenResponse,
 };
 use rand::RngCore;
 
-use crate::{errors::AppError, AppState, AuthRequest, User};
+use crate::{errors::AppError, AppState, AuthRequest, User, UserContext};
 
 static SESSION_COOKIE_NAME: &str = "SESSION";
 
@@ -98,6 +98,13 @@ pub async fn auth_callback(
         .json::<User>()
         .await
         .context("failed to deserialize response as JSON")?;
+
+
+    let user_context = get_or_insert_user(&user_data, &app_state).await?;
+    {
+        let mut user_context_lock = app_state.user_context.write().await;
+        *user_context_lock = Some(user_context.clone());
+    }
 
     // Create a new session filled with user data
     let mut session = Session::new();
@@ -188,4 +195,57 @@ async fn expire_session(app_state: &AppState, session_id: &String) -> Result<(),
     .await?;
 
     Ok(())
+}
+
+pub async fn get_user(user_id: &String, app_state: &AppState) -> Result<Option<UserContext>, AppError> {
+    let user_context = sqlx::query_as!(
+        UserContext,
+        r#"
+        SELECT 
+            CAST(id as unsigned) AS user_id, 
+            email, 
+            first_name AS name
+        FROM users
+        WHERE google_id = ?
+        "#,
+        user_id
+    )
+    .fetch_optional(&app_state.db)
+    .await?;
+
+    Ok(user_context)
+}
+
+pub async fn create_user(user_data: &User, app_state: &AppState) -> Result<u64, AppError> {
+    let result = sqlx::query!(
+        r#"
+            INSERT INTO users (google_id, email, first_name, last_name)
+            VALUES (?, ?, ?, ?)
+        "#,
+        user_data.sub,
+        user_data.email,
+        user_data.given_name,
+        user_data.family_name,
+    )
+    .execute(&app_state.db)
+    .await;
+
+    let user = result.context("Failed to insert user into database")?;
+    Ok(user.last_insert_id())
+}
+
+
+async fn get_or_insert_user(user_data: &User, app_state: &AppState) -> Result<UserContext, AppError> {
+    let existing_user = get_user(&user_data.sub, app_state).await?;
+    if let Some(user_context) = existing_user {
+        return Ok(user_context);
+    }
+
+    let user_id = create_user(user_data, app_state).await?;
+
+    Ok(UserContext {
+        user_id,
+        email: user_data.email.clone(),
+        name: user_data.given_name.clone(),
+    })
 }
