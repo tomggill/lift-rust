@@ -165,6 +165,7 @@ async fn protected(State(app_state): State<AppState>) -> Result<impl IntoRespons
 }
 
 async fn logout(
+    State(app_state): State<AppState>,
     State(oauth_client): State<BasicClient>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -173,6 +174,11 @@ async fn logout(
     // See: https://cloud.google.com/apigee/docs/api-platform/security/oauth/validating-and-invalidating-access-tokens
     if let Some(refresh_token) = cookies.get("refresh_token") {
         revoke_token(refresh_token.to_string(), &oauth_client).await?;
+    }
+
+    {
+        let mut user_context_lock = app_state.user_context.write().await;
+        *user_context_lock = None;
     }
 
     // TODO - refactor
