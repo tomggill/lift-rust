@@ -3,6 +3,7 @@ DROP TABLE IF EXISTS `users`;
 
 CREATE TABLE `users` (
     id INT AUTO_INCREMENT PRIMARY KEY,
+    google_id: VARCHAR(255),
     email VARCHAR(255) NOT NULL UNIQUE,
     first_name VARCHAR(64) NOT NULL,
     last_name VARCHAR(64),
