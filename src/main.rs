@@ -6,14 +6,12 @@ mod route;
 mod service;
 
 use anyhow::{Context, Result};
-use axum::{
-    extract::{FromRef, State},
-    response::{IntoResponse, Redirect, Response},
+use axum::{extract::{FromRef, State}, response::{IntoResponse, Redirect, Response}
 };
-use axum_extra::{extract::cookie::Cookie, headers, TypedHeader};
 use dotenv::dotenv;
 use errors::AppError;
-use http::{header::SET_COOKIE, HeaderMap, Method};
+use http::Method;
+use middleware::log;
 use reqwest::Client;
 use route::create_router;
 use serde::{Deserialize, Serialize};
@@ -57,6 +55,8 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    tracing::info!("Starting up the application...");
+
     let db = get_sql_pool().await.unwrap();
     let http_client = Client::new();
     let app_state = AppState {
@@ -71,7 +71,10 @@ async fn main() {
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers(Any);
 
-    let app = create_router(app_state).await.layer(cors);
+    let app = create_router(app_state)
+        .await
+        .layer(cors)
+        .layer(axum::middleware::from_fn(log::log_request));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
@@ -79,7 +82,7 @@ async fn main() {
         .unwrap();
 
     tracing::debug!(
-        "listening on {}",
+        "Application started - Listening on {}",
         listener
             .local_addr()
             .context("failed to return local address")

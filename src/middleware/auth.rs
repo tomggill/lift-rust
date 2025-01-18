@@ -13,7 +13,7 @@ use crate::{ errors::AppError, handler::auth_handler::get_user, service::google_
 pub async fn auth(
     State(app_state): State<AppState>,
     State(google_token_service): State<GoogleTokenService>,
-    mut req: Request,
+    req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, AppError> {
     let cookies = CookieJar::from_headers(req.headers());
