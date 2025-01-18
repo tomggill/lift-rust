@@ -1,37 +1,23 @@
 use anyhow::{anyhow, Context};
-use async_session::{base64, MemoryStore, Session, SessionStore};
+use async_session::base64;
 use axum::{
     extract::{Query, State},
     http::{header::SET_COOKIE, HeaderMap},
     response::{IntoResponse, Redirect},
 };
-use axum_extra::{headers, TypedHeader};
+use axum_extra::{extract::cookie::Cookie, headers, TypedHeader};
 use chrono::{Duration, Utc};
-use oauth2::{
-    basic::BasicClient, reqwest::async_http_client, AuthorizationCode, CsrfToken, Scope,
-    TokenResponse,
-};
 use rand::RngCore;
 
-use crate::{errors::AppError, AppState, AuthRequest, User, UserContext};
+use crate::{errors::AppError, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, AppState, AuthRequest, User, UserContext};
 
 static SESSION_COOKIE_NAME: &str = "SESSION";
 
 pub async fn google_auth(
-    State(client): State<BasicClient>,
     State(app_state): State<AppState>,
+    State(google_token_service): State<GoogleTokenService>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (auth_url, csrf_token) = client
-        .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new(
-            std::env::var("GOOGLE_EMAIL_SCOPE").context("Missing GOOGLE_EMAIL_SCOPE!")?,
-        ))
-        .add_scope(Scope::new(
-            std::env::var("GOOGLE_PROFILE_SCOPE").context("Missing GOOGLE_PROFILE_SCOPE!")?,
-        ))
-        .add_extra_param("access_type", "offline")
-        .add_extra_param("prompt", "consent")
-        .url();
+    let (auth_url, csrf_token) = google_token_service.generate_authorisation_url().await?;
 
     let session_id = generate_session_id();
     let csrf_token_secret = csrf_token.secret();
@@ -66,38 +52,21 @@ pub async fn google_auth(
 
 pub async fn auth_callback(
     Query(query): Query<AuthRequest>,
-    State(store): State<MemoryStore>,
-    State(oauth_client): State<BasicClient>,
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
     State(app_state): State<AppState>,
+    State(google_token_service): State<GoogleTokenService>,
 ) -> Result<impl IntoResponse, AppError> {
     csrf_token_validation_workflow(&app_state, &query, &cookies).await?;
 
     // Get an auth token
-    let token = oauth_client
-        .exchange_code(AuthorizationCode::new(query.code.clone()))
-        .request_async(async_http_client)
-        .await
-        .context("failed in sending request request to authorization server")?;
+    let (access_token, refresh_token) = google_token_service.exchange_authorisation_code(query.code.clone()).await?;
 
-    let access_token = token.access_token().secret().to_string();
+    let access_token = access_token.secret().to_string();
 
-    let refresh_token = token
-        .refresh_token()
-        .map(|rt| rt.secret().to_string())
-        .context("Refresh token missing on callback")?;
+    let refresh_token = refresh_token.secret().to_string();
 
     // Fetch user data from google
-    let client = reqwest::Client::new();
-    let user_data: User = client
-        .get("https://openidconnect.googleapis.com/v1/userinfo")
-        .bearer_auth(access_token.clone())
-        .send()
-        .await
-        .context("failed in sending request to target Url")?
-        .json::<User>()
-        .await
-        .context("failed to deserialize response as JSON")?;
+    let user_data = google_token_service.get_user_info(&access_token).await?;
 
 
     let user_context = get_or_insert_user(&user_data, &app_state).await?;
@@ -106,21 +75,7 @@ pub async fn auth_callback(
         *user_context_lock = Some(user_context.clone());
     }
 
-    // Create a new session filled with user data
-    let mut session = Session::new();
-    session
-        .insert("user", &user_data)
-        .context("failed in inserting serialized value into session")?;
-
-    // Store session and get corresponding cookie
-    let cookie = store
-        .store_session(session)
-        .await
-        .context("failed to store session")?
-        .context("unexpected error retrieving cookie value")?;
-
     let cookies = [
-        format!("{SESSION_COOKIE_NAME}={cookie}; SameSite=Lax; HttpOnly; Secure; Path=/"),
         format!("access_token={access_token}; SameSite=Lax; HttpOnly; Secure; Path=/"),
         format!("refresh_token={refresh_token}; SameSite=Lax; HttpOnly; Secure; Path=/"),
     ];
@@ -195,6 +150,48 @@ async fn expire_session(app_state: &AppState, session_id: &String) -> Result<(),
     .await?;
 
     Ok(())
+}
+
+pub async fn logout(
+    State(app_state): State<AppState>,
+    TypedHeader(cookies): TypedHeader<headers::Cookie>,
+    State(google_token_service): State<GoogleTokenService>,
+) -> Result<impl IntoResponse, AppError> {
+    // TODO: Revocation of access and refresh token not necessary as revoking a refresh 
+    // token in Google OAUTH 2.0 also revokes the associated access token and vice versa.
+    // See: https://cloud.google.com/apigee/docs/api-platform/security/oauth/validating-and-invalidating-access-tokens
+    if let Some(refresh_token) = cookies.get("refresh_token") {
+        google_token_service.revoke_token(refresh_token.to_string()).await?;
+    }
+
+    {
+        let mut user_context_lock = app_state.user_context.write().await;
+        *user_context_lock = None;
+    }
+
+    // TODO - refactor
+    let empty_access_token = Cookie::build(("access_token", ""))
+        .path("/")
+        .http_only(true)
+        .build();
+    let empty_refresh_token = Cookie::build(("refresh_token", ""))
+        .path("/")
+        .http_only(true)
+        .build();
+
+    let mut headers = HeaderMap::new();
+    headers.append(
+        SET_COOKIE,
+        empty_access_token.to_string().parse().unwrap(),
+    );
+    headers.append(
+        SET_COOKIE,
+        empty_refresh_token.to_string().parse().unwrap(),
+    );
+
+
+    // Redirect to the home page
+    Ok((headers, Redirect::to("/")))
 }
 
 pub async fn get_user(user_id: &String, app_state: &AppState) -> Result<Option<UserContext>, AppError> {

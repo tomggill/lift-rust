@@ -1,8 +1,8 @@
 use axum::{middleware, routing::get, Router};
 
 use crate::{
-    handler::auth_handler::{auth_callback, google_auth},
-    index, logout,
+    handler::auth_handler::{auth_callback, google_auth, logout},
+    index,
     middleware::auth as auth_middleware,
     protected, AppState,
 };
