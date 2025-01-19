@@ -7,7 +7,7 @@ use axum::{
 
 use axum_extra::extract::cookie::{Cookie, CookieJar};
 
-use crate::{ errors::AppError, handler::auth_handler::get_user, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, state::app_state::UserContext, AppState};
+use crate::{ errors::AppError, repository::user_repository::UserRepositoryTrait, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, state::app_state::UserContext, AppState};
 
 // TODO - Add appropriate error responses
 pub async fn auth(
@@ -39,7 +39,7 @@ async fn validate_and_set_user_context(
     access_token: &str,
 ) -> Result<Option<UserContext>, AppError> {
     if let Ok(google_token_info) = google_token_service.get_token_info(access_token).await {
-        let existing_user = get_user(&google_token_info.user_id, app_state).await?;
+        let existing_user = app_state.user_repository.find_user_by_google_id(&google_token_info.user_id).await?;
         if let Some(user_context) = existing_user {
             let mut user_context_lock = app_state.user_context.write().await;
             *user_context_lock = Some(user_context.clone());
