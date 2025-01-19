@@ -9,7 +9,7 @@ use axum_extra::{extract::cookie::Cookie, headers, TypedHeader};
 use chrono::{Duration, Utc};
 use rand::RngCore;
 
-use crate::{errors::AppError, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, AppState, AuthRequest, User, UserContext};
+use crate::{errors::AppError, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, state::app_state::UserContext, AppState, AuthRequest, User};
 
 static SESSION_COOKIE_NAME: &str = "SESSION";
 
@@ -20,21 +20,8 @@ pub async fn google_auth(
     let (auth_url, csrf_token) = google_token_service.generate_authorisation_url().await?;
 
     let session_id = generate_session_id();
-    let csrf_token_secret = csrf_token.secret();
-    let expires_at = Utc::now() + Duration::hours(1);
 
-    // Store CSRF token
-    sqlx::query!(
-        r#"
-            INSERT INTO sessions (session_id, csrf_token, expires_at)
-            VALUES (?, ?, ?)
-            "#,
-        session_id,
-        csrf_token_secret,
-        expires_at
-    )
-    .execute(&app_state.db)
-    .await?;
+    store_csrf_token(&session_id, csrf_token.secret(), &app_state).await?;
 
     let cookies = [format!(
         "{SESSION_COOKIE_NAME}={session_id}; SameSite=Lax; HttpOnly; Secure; Path=/"
@@ -56,16 +43,15 @@ pub async fn auth_callback(
     State(app_state): State<AppState>,
     State(google_token_service): State<GoogleTokenService>,
 ) -> Result<impl IntoResponse, AppError> {
+    tracing::debug!("Handling google auth callback");
     csrf_token_validation_workflow(&app_state, &query, &cookies).await?;
 
-    // Get an auth token
     let (access_token, refresh_token) = google_token_service.exchange_authorisation_code(query.code.clone()).await?;
 
     let access_token = access_token.secret().to_string();
 
     let refresh_token = refresh_token.secret().to_string();
 
-    // Fetch user data from google
     let user_data = google_token_service.get_user_info(&access_token).await?;
 
 
@@ -95,7 +81,7 @@ async fn csrf_token_validation_workflow(
     auth_request: &AuthRequest,
     cookies: &headers::Cookie,
 ) -> Result<(), AppError> {
-    // Extract the cookie from the request
+    tracing::debug!("Validating CSRF token for google auth callback");
     let session_id = cookies
         .get(SESSION_COOKIE_NAME)
         .context("unexpected error getting cookie name")?
@@ -107,7 +93,6 @@ async fn csrf_token_validation_workflow(
 
     expire_session(app_state, &session_id).await?;
 
-    // Validate CSRF token is the same as the one in the auth request
     if stored_csrf_token != auth_request.state {
         return Err(anyhow!("CSRF token mismatch").into());
     }
@@ -157,6 +142,9 @@ pub async fn logout(
     TypedHeader(cookies): TypedHeader<headers::Cookie>,
     State(google_token_service): State<GoogleTokenService>,
 ) -> Result<impl IntoResponse, AppError> {
+    if let Some(user_id) = app_state.get_user_id().await {
+        tracing::debug!("Logging out user with ID: {}", user_id);
+    }
     // TODO: Revocation of access and refresh token not necessary as revoking a refresh 
     // token in Google OAUTH 2.0 also revokes the associated access token and vice versa.
     // See: https://cloud.google.com/apigee/docs/api-platform/security/oauth/validating-and-invalidating-access-tokens
@@ -189,9 +177,24 @@ pub async fn logout(
         empty_refresh_token.to_string().parse().unwrap(),
     );
 
-
-    // Redirect to the home page
     Ok((headers, Redirect::to("/")))
+}
+
+pub async fn store_csrf_token(session_id: &String, csrf_token_secret: &String, app_state: &AppState) -> Result<(), AppError> {
+    let expires_at = Utc::now() + Duration::hours(1);
+    sqlx::query!(
+        r#"
+            INSERT INTO sessions (session_id, csrf_token, expires_at)
+            VALUES (?, ?, ?)
+            "#,
+        session_id,
+        csrf_token_secret,
+        expires_at
+    )
+    .execute(&app_state.db)
+    .await?;
+
+    Ok(())
 }
 
 pub async fn get_user(user_id: &String, app_state: &AppState) -> Result<Option<UserContext>, AppError> {
@@ -214,6 +217,7 @@ pub async fn get_user(user_id: &String, app_state: &AppState) -> Result<Option<U
 }
 
 pub async fn create_user(user_data: &User, app_state: &AppState) -> Result<u64, AppError> {
+    tracing::debug!("Creating a new user");
     let result = sqlx::query!(
         r#"
             INSERT INTO users (google_id, email, first_name, last_name)

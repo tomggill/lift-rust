@@ -7,7 +7,7 @@ use axum::{
 
 use axum_extra::extract::cookie::{Cookie, CookieJar};
 
-use crate::{ errors::AppError, handler::auth_handler::get_user, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, AppState, UserContext};
+use crate::{ errors::AppError, handler::auth_handler::get_user, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, state::app_state::UserContext, AppState};
 
 // TODO - Add appropriate error responses
 pub async fn auth(
@@ -16,6 +16,7 @@ pub async fn auth(
     req: Request,
     next: Next,
 ) -> Result<impl IntoResponse, AppError> {
+    tracing::debug!("Authenticating request");
     let cookies = CookieJar::from_headers(req.headers());
     if let Some(access_token_cookie) = cookies.get("access_token") {
         let access_token = access_token_cookie.value().to_string();
@@ -28,6 +29,7 @@ pub async fn auth(
         let refresh_token = refresh_token_cookie.value().to_string();
         return handle_refresh_token(&app_state, &google_token_service, &refresh_token, req, next).await;
     }
+
     Ok(Redirect::to("/").into_response())
 }
 
