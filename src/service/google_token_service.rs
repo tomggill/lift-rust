@@ -3,7 +3,7 @@ use oauth2::{basic::BasicClient, reqwest::async_http_client, AccessToken, AuthUr
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
-use crate::{config, errors::AppError, User};
+use crate::{config:: parameter, errors::AppError, User};
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct GoogleTokenInfo {
@@ -42,10 +42,10 @@ impl TokenServiceTrait for GoogleTokenService {
         let (auth_url, csrf_token) = self.oauth_client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new(
-            std::env::var("GOOGLE_EMAIL_SCOPE").context("Missing GOOGLE_EMAIL_SCOPE!")?,
+            parameter::get("GOOGLE_EMAIL_SCOPE")?,
         ))
         .add_scope(Scope::new(
-            std::env::var("GOOGLE_PROFILE_SCOPE").context("Missing GOOGLE_PROFILE_SCOPE!")?,
+            parameter::get("GOOGLE_PROFILE_SCOPE")?,
         ))
         .add_extra_param("access_type", "offline")
         .add_extra_param("prompt", "consent")
@@ -97,7 +97,7 @@ impl TokenServiceTrait for GoogleTokenService {
         &self,
         access_token: &str,
     ) -> Result<GoogleTokenInfo, AppError> {
-        let token_info_url = config::parameter::get("GOOGLE_TOKEN_INFO_URL");
+        let token_info_url = parameter::get("GOOGLE_TOKEN_INFO_URI")?;
         let response = self
             .http_client
             .get(token_info_url)
@@ -134,19 +134,12 @@ impl TokenServiceTrait for GoogleTokenService {
 }
 
 fn get_oauth_client() -> Result<BasicClient, AppError> {
-    let client_id = std::env::var("GOOGLE_CLIENT_ID").context("Missing CLIENT_ID!")?;
-    let client_secret = std::env::var("GOOGLE_CLIENT_SECRET").context("Missing CLIENT_SECRET!")?;
-    let redirect_url = std::env::var("GOOGLE_REDIRECT_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:3000/auth/authorized".to_string());
-
-    let auth_url = std::env::var("GOOGLE_AUTH_URL")
-        .unwrap_or_else(|_| "https://accounts.google.com/o/oauth2/v2/auth".to_string());
-
-    let token_url = std::env::var("GOOGLE_TOKEN_URL")
-        .unwrap_or_else(|_| "https://oauth2.googleapis.com/token".to_string());
-
-    let revocation_url = std::env::var("GOOGLE_REVOCATION_URL")
-        .unwrap_or_else(|_| "https://oauth2.googleapis.com/revoke".to_string());
+    let client_id = parameter::get("GOOGLE_CLIENT_ID")?;
+    let client_secret = parameter::get("GOOGLE_CLIENT_SECRET")?;
+    let redirect_url = parameter::get("GOOGLE_REDIRECT_URI")?;
+    let auth_url = parameter::get("GOOGLE_AUTH_URI")?;
+    let token_url = parameter::get("GOOGLE_TOKEN_URI")?;
+    let revocation_url = parameter::get("GOOGLE_REVOCATION_URI")?;
 
 
     Ok(BasicClient::new(

@@ -9,7 +9,7 @@ use axum_extra::{extract::cookie::Cookie, headers, TypedHeader};
 use chrono::{Duration, Utc};
 use rand::RngCore;
 
-use crate::{errors::AppError, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, state::app_state::UserContext, AppState, AuthRequest, User};
+use crate::{config::database::DatabaseTrait, errors::AppError, service::google_token_service::{GoogleTokenService, TokenServiceTrait}, state::app_state::UserContext, AppState, AuthRequest, User};
 
 static SESSION_COOKIE_NAME: &str = "SESSION";
 
@@ -116,7 +116,7 @@ async fn get_csrf_token_by_session(
         "#,
         session_id
     )
-    .fetch_optional(&app_state.db)
+    .fetch_optional(app_state.database.get_pool())
     .await?;
 
     Ok(row.map(|r| r.csrf_token))
@@ -131,7 +131,7 @@ async fn expire_session(app_state: &AppState, session_id: &String) -> Result<(),
         "#,
         session_id
     )
-    .execute(&app_state.db)
+    .execute(app_state.database.get_pool())
     .await?;
 
     Ok(())
@@ -191,7 +191,7 @@ pub async fn store_csrf_token(session_id: &String, csrf_token_secret: &String, a
         csrf_token_secret,
         expires_at
     )
-    .execute(&app_state.db)
+    .execute(app_state.database.get_pool())
     .await?;
 
     Ok(())
@@ -210,7 +210,7 @@ pub async fn get_user(user_id: &String, app_state: &AppState) -> Result<Option<U
         "#,
         user_id
     )
-    .fetch_optional(&app_state.db)
+    .fetch_optional(app_state.database.get_pool())
     .await?;
 
     Ok(user_context)
@@ -228,7 +228,7 @@ pub async fn create_user(user_data: &User, app_state: &AppState) -> Result<u64, 
         user_data.given_name,
         user_data.family_name,
     )
-    .execute(&app_state.db)
+    .execute(app_state.database.get_pool())
     .await;
 
     let user = result.context("Failed to insert user into database")?;

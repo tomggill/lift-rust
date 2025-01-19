@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use axum::extract::FromRef;
 use reqwest::Client;
-use sqlx::MySqlPool;
 use tokio::sync::RwLock;
 
-use crate::service::google_token_service::{GoogleTokenService, TokenServiceTrait};
+use crate::{config::database::{Database, DatabaseTrait}, errors::AppError, service::google_token_service::{GoogleTokenService, TokenServiceTrait}};
 
 #[derive(Clone)]
 pub struct UserContext {
@@ -16,8 +15,8 @@ pub struct UserContext {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub database: Arc<Database>,
     pub http_client: Client,
-    pub db: MySqlPool,
     pub user_context: Arc<RwLock<Option<UserContext>>>,
     pub google_token_service: GoogleTokenService,
 }
@@ -29,13 +28,13 @@ impl FromRef<AppState> for GoogleTokenService {
 }
 
 impl AppState {
-    pub fn new(db: MySqlPool) -> Self {
-        Self {
+    pub async fn new() -> Result<Self, AppError> {
+        Ok(Self {
+            database: Arc::new(Database::new().await?),
             http_client: Client::new(),
-            db,
             user_context: Arc::new(RwLock::new(None)),
             google_token_service: GoogleTokenService::new(),
-        }
+        })
     }
 
     pub async fn get_user_id(&self) -> Option<u64> {

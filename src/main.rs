@@ -9,21 +9,19 @@ mod state;
 use anyhow::{Context, Result};
 use axum::{extract::State, response::{IntoResponse, Redirect, Response}
 };
-use dotenv::dotenv;
+use config::parameter;
 use errors::AppError;
 use http::Method;
 use middleware::log;
 use route::create_router;
 use serde::{Deserialize, Serialize};
-use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 use state::app_state::AppState;
-use std::env;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
-async fn main() {
-    dotenv().ok();
+async fn main() -> Result<(), AppError> {
+    parameter::init();
 
     tracing_subscriber::registry()
         .with(
@@ -35,9 +33,8 @@ async fn main() {
 
     tracing::info!("Starting up the application...");
 
-    let db = get_sql_pool().await.unwrap();
 
-    let app_state = AppState::new(db);
+    let app_state = AppState::new().await?;
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -63,17 +60,8 @@ async fn main() {
     );
 
     axum::serve(listener, app).await.unwrap();
-}
 
-async fn get_sql_pool() -> Result<MySqlPool, AppError> {
-    let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
-    let pool = MySqlPoolOptions::new()
-        .max_connections(10)
-        .connect(&database_url)
-        .await
-        .context("Failed to connect to the database")?;
-    tracing::info!("Connection to the database is successful!");
-    Ok(pool)
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]

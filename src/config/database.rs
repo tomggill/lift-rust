@@ -1,18 +1,19 @@
+use anyhow::Context;
 use async_trait::async_trait;
-use dotenv::dotenv;
-use sqlx::{MySql, MySqlPool, Pool};
+use sqlx::{mysql::MySqlPoolOptions, MySql, MySqlPool, Pool};
 
 use crate::errors::AppError;
 
 use super::parameter;
 
+#[derive(Clone)]
 pub struct Database {
-    pool: Pool<MySql>,
+    pool: MySqlPool,
 }
 
 #[async_trait]
 pub trait DatabaseTrait {
-    async fn init() -> Result<Self, AppError>
+    async fn new() -> Result<Self, AppError>
     where
         Self: Sized;
     fn get_pool(&self) -> &Pool<MySql>;
@@ -20,9 +21,14 @@ pub trait DatabaseTrait {
 
 #[async_trait]
 impl DatabaseTrait for Database {
-    async fn init() -> Result<Self, AppError> {
-        let database_url = parameter::get("DATABASE_URL");
-        let pool = MySqlPool::connect(&database_url).await?;
+    async fn new() -> Result<Self, AppError> {
+        let database_url = parameter::get("DATABASE_URL")?;
+        let pool = MySqlPoolOptions::new()
+            .max_connections(10)
+            .connect(&database_url)
+            .await
+            .context("Failed to connect to the database")?;
+        tracing::info!("Connection to the database is successful!");
         Ok(Self { pool })
     }
 
