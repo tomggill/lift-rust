@@ -4,7 +4,7 @@ use axum::extract::FromRef;
 use reqwest::Client;
 use tokio::sync::RwLock;
 
-use crate::{config::database::{Database, DatabaseTrait}, errors::AppError, repository::user_repository::{UserRepository, UserRepositoryTrait}, service::{google_token_service::{GoogleTokenService, TokenServiceTrait}, user_service::UserService}};
+use crate::{config::database::{Database, DatabaseTrait}, errors::AppError, repository::{session_repository::{SessionRepository, SessionRepositoryTrait}, user_repository::{UserRepository, UserRepositoryTrait}}, service::{google_token_service::{GoogleTokenService, TokenServiceTrait}, user_service::UserService}};
 
 #[derive(Clone)]
 pub struct UserContext {
@@ -21,6 +21,7 @@ pub struct AppState {
     pub google_token_service: GoogleTokenService,
     pub user_service: UserService,
     pub user_repository: UserRepository,
+    pub session_repository: SessionRepository,
 }
 
 impl FromRef<AppState> for GoogleTokenService {
@@ -39,6 +40,7 @@ impl AppState {
             google_token_service: GoogleTokenService::new(),
             user_service: UserService::new(&db_conn),
             user_repository: UserRepository::new(&db_conn),
+            session_repository: SessionRepository::new(&db_conn),
         })
     }
 
