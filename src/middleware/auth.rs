@@ -20,7 +20,7 @@ pub async fn auth(
     let cookies = CookieJar::from_headers(req.headers());
     if let Some(access_token_cookie) = cookies.get("access_token") {
         let access_token = access_token_cookie.value().to_string();
-        if let Some(_) = validate_and_set_user_context(&app_state, &google_token_service, &access_token).await? {
+        if (validate_and_set_user_context(&app_state, &google_token_service, &access_token).await?).is_some() {
             return Ok(next.run(req).await);
         }
     }
@@ -65,7 +65,7 @@ async fn handle_refresh_token(
             SET_COOKIE,
             new_access_token_cookie.to_string().parse().unwrap(),
         );
-        if let Some(_) = validate_and_set_user_context(app_state, google_token_service, new_access_token.secret()).await? {
+        if (validate_and_set_user_context(app_state, google_token_service, new_access_token.secret()).await?).is_some() {
             return Ok(response);
         }
     }

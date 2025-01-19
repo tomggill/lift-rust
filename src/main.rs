@@ -8,8 +8,7 @@ mod state;
 mod repository;
 
 use anyhow::{Context, Result};
-use axum::{extract::State, response::{IntoResponse, Redirect, Response}
-};
+use axum::{extract::State, response::IntoResponse};
 use config::parameter;
 use errors::AppError;
 use http::Method;
@@ -88,20 +87,5 @@ async fn protected(State(app_state): State<AppState>) -> Result<impl IntoRespons
     match app_state.user_context.read().await.as_ref() {
         Some(user) => Ok(format!("Welcome to the protected area, {}!", user.name)),
         None => Err(anyhow::anyhow!("You're not logged in.").into()),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct AuthRequest {
-    code: String,
-    state: String,
-}
-
-struct AuthRedirect;
-
-impl IntoResponse for AuthRedirect {
-    fn into_response(self) -> Response {
-        Redirect::temporary("/auth/google").into_response()
     }
 }

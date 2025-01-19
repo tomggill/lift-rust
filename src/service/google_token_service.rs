@@ -121,7 +121,7 @@ impl TokenServiceTrait for GoogleTokenService {
     async fn get_user_info(&self, access_token: &str) -> Result<User, AppError> {
         let user_data: User = self.http_client
             .get("https://openidconnect.googleapis.com/v1/userinfo")
-            .bearer_auth(access_token.clone())
+            .bearer_auth(access_token)
             .send()
             .await
             .context("failed in sending request to target Url")?
