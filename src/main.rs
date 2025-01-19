@@ -5,6 +5,7 @@ mod middleware;
 mod route;
 mod service;
 mod state;
+mod repository;
 
 use anyhow::{Context, Result};
 use axum::{extract::State, response::{IntoResponse, Redirect, Response}

@@ -55,7 +55,7 @@ pub async fn auth_callback(
     let user_data = google_token_service.get_user_info(&access_token).await?;
 
 
-    let user_context = get_or_insert_user(&user_data, &app_state).await?;
+    let user_context = app_state.user_service.get_or_insert_user(&user_data).await?;
     {
         let mut user_context_lock = app_state.user_context.write().await;
         *user_context_lock = Some(user_context.clone());
@@ -195,58 +195,4 @@ pub async fn store_csrf_token(session_id: &String, csrf_token_secret: &String, a
     .await?;
 
     Ok(())
-}
-
-pub async fn get_user(user_id: &String, app_state: &AppState) -> Result<Option<UserContext>, AppError> {
-    let user_context = sqlx::query_as!(
-        UserContext,
-        r#"
-        SELECT 
-            CAST(id as unsigned) AS user_id, 
-            email, 
-            first_name AS name
-        FROM users
-        WHERE google_id = ?
-        "#,
-        user_id
-    )
-    .fetch_optional(app_state.database.get_pool())
-    .await?;
-
-    Ok(user_context)
-}
-
-pub async fn create_user(user_data: &User, app_state: &AppState) -> Result<u64, AppError> {
-    tracing::debug!("Creating a new user");
-    let result = sqlx::query!(
-        r#"
-            INSERT INTO users (google_id, email, first_name, last_name)
-            VALUES (?, ?, ?, ?)
-        "#,
-        user_data.sub,
-        user_data.email,
-        user_data.given_name,
-        user_data.family_name,
-    )
-    .execute(app_state.database.get_pool())
-    .await;
-
-    let user = result.context("Failed to insert user into database")?;
-    Ok(user.last_insert_id())
-}
-
-
-async fn get_or_insert_user(user_data: &User, app_state: &AppState) -> Result<UserContext, AppError> {
-    let existing_user = get_user(&user_data.sub, app_state).await?;
-    if let Some(user_context) = existing_user {
-        return Ok(user_context);
-    }
-
-    let user_id = create_user(user_data, app_state).await?;
-
-    Ok(UserContext {
-        user_id,
-        email: user_data.email.clone(),
-        name: user_data.given_name.clone(),
-    })
 }
