@@ -47,4 +47,14 @@ impl AppState {
     pub async fn get_user_id(&self) -> Option<u64> {
         self.user_context.read().await.as_ref().map(|user| user.user_id)
     }
+
+    pub async fn set_user_context(&self, user_context: UserContext) {
+        let mut user_context_lock = self.user_context.write().await;
+        *user_context_lock = Some(user_context);
+    }
+
+    pub async fn clear_user_context(&self) {
+        let mut user_context_lock = self.user_context.write().await;
+        *user_context_lock = None;
+    }
 }

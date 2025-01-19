@@ -29,7 +29,6 @@ pub async fn auth(
         let refresh_token = refresh_token_cookie.value().to_string();
         return handle_refresh_token(&app_state, &google_token_service, &refresh_token, req, next).await;
     }
-
     Ok(Redirect::to("/").into_response())
 }
 
@@ -41,8 +40,7 @@ async fn validate_and_set_user_context(
     if let Ok(google_token_info) = google_token_service.get_token_info(access_token).await {
         let existing_user = app_state.user_repository.find_user_by_google_id(&google_token_info.user_id).await?;
         if let Some(user_context) = existing_user {
-            let mut user_context_lock = app_state.user_context.write().await;
-            *user_context_lock = Some(user_context.clone());
+            app_state.set_user_context(user_context.clone()).await;
             return Ok(Some(user_context));
         }
     }

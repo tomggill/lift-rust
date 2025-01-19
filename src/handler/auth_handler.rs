@@ -52,12 +52,8 @@ pub async fn auth_callback(
 
     let user_data = google_token_service.get_user_info(&access_token).await?;
 
-
     let user_context = app_state.user_service.get_or_insert_user(&user_data).await?;
-    {
-        let mut user_context_lock = app_state.user_context.write().await;
-        *user_context_lock = Some(user_context.clone());
-    }
+    app_state.set_user_context(user_context).await;
 
     let cookies = [
         format!("access_token={access_token}; SameSite=Lax; HttpOnly; Secure; Path=/"),
@@ -116,10 +112,7 @@ pub async fn logout(
         google_token_service.revoke_token(refresh_token.to_string()).await?;
     }
 
-    {
-        let mut user_context_lock = app_state.user_context.write().await;
-        *user_context_lock = None;
-    }
+    app_state.clear_user_context().await;
 
     // TODO - refactor
     let empty_access_token = Cookie::build(("access_token", ""))
